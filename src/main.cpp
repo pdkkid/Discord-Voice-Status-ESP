@@ -25,7 +25,10 @@ static const char *DEFAULT_WIFI_PASS = "";
 // ===================================================
 
 // Firmware version string (bump this when you want devices to accept new versions)
-static const char *FW_VERSION = "dev";
+#ifndef FW_VERSION
+  #define FW_VERSION "dev"
+#endif
+static const char *FW_VERSION_STR = FW_VERSION;
 
 // LED pins (Active HIGH)
 #if defined(ESP8266)
@@ -327,7 +330,7 @@ static void performOtaUpdate(const String &url, const String &md5Optional)
   {
     BearSSL::WiFiClientSecure client;
     client.setInsecure(); // practical for ESP8266 remote OTA
-    auto ret = ESPhttpUpdate.update(client, url, String(FW_VERSION));
+    auto ret = ESPhttpUpdate.update(client, url, String(FW_VERSION_STR));
     switch (ret)
     {
     case HTTP_UPDATE_OK:
@@ -349,7 +352,7 @@ static void performOtaUpdate(const String &url, const String &md5Optional)
   else
   {
     WiFiClient client;
-    auto ret = ESPhttpUpdate.update(client, url, String(FW_VERSION));
+    auto ret = ESPhttpUpdate.update(client, url, String(FW_VERSION_STR));
     switch (ret)
     {
     case HTTP_UPDATE_OK:
@@ -383,7 +386,7 @@ static void performOtaUpdate(const String &url, const String &md5Optional)
   {
     WiFiClientSecure client;
     client.setInsecure(); // easiest; if you want CA pinning later we can do it
-    t_httpUpdate_return ret = httpUpdate.update(client, url, String(FW_VERSION));
+    t_httpUpdate_return ret = httpUpdate.update(client, url, String(FW_VERSION_STR));
     if (ret == HTTP_UPDATE_OK)
     {
       Serial.println("✅ OTA OK (ESP32) - rebooting");
@@ -404,7 +407,7 @@ static void performOtaUpdate(const String &url, const String &md5Optional)
   else
   {
     WiFiClient client;
-    t_httpUpdate_return ret = httpUpdate.update(client, url, String(FW_VERSION));
+    t_httpUpdate_return ret = httpUpdate.update(client, url, String(FW_VERSION_STR));
     if (ret == HTTP_UPDATE_OK)
     {
       Serial.println("✅ OTA OK (ESP32) - rebooting");

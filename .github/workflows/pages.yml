@@ -3,6 +3,7 @@ name: Build firmware + Deploy Pages
 on:
   push:
     branches: [ "master" ]
+    tags: [ "v*" ]
   workflow_dispatch:
 
 permissions:
@@ -31,36 +32,67 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio
 
+      - name: Compute version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"   # e.g. v1.2.3
+          else
+            VERSION="sha-${GITHUB_SHA::7}" # e.g. sha-1a2b3c4
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
       - name: Build ESP8266 + ESP32
         run: |
           pio run -e esp8266
           pio run -e esp32
+        env:
+          FW_VERSION: ${{ steps.ver.outputs.VERSION }}
 
-      - name: Prepare site
+      - name: Prepare site (versioned + latest)
+        shell: bash
         run: |
           rm -rf site
-          mkdir -p site/firmware
+          mkdir -p "site/firmware/${VERSION}"
+          mkdir -p "site/firmware/latest"
+
           # Copy web UI
           cp -r web/* site/
-          # Copy firmware outputs
-          cp .pio/build/esp8266/firmware.bin site/firmware/esp8266.bin
-          cp .pio/build/esp32/firmware_merged.bin site/firmware/esp32_merged.bin
 
-          # (optional) set version in manifest from git sha
-          GIT_SHA=$(git rev-parse --short HEAD)
+          # Copy firmware artifacts (versioned)
+          cp .pio/build/esp8266/firmware.bin "site/firmware/${VERSION}/esp8266.bin"
+          cp .pio/build/esp32/firmware_merged.bin "site/firmware/${VERSION}/esp32_merged.bin"
+
+          # Also update latest pointers
+          cp "site/firmware/${VERSION}/esp8266.bin" "site/firmware/latest/esp8266.bin"
+          cp "site/firmware/${VERSION}/esp32_merged.bin" "site/firmware/latest/esp32_merged.bin"
+
+          # Write version.json for OTA clients/servers
+          cat > "site/firmware/${VERSION}/version.json" <<EOF
+          { "version": "${VERSION}", "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)" }
+          EOF
+          cp "site/firmware/${VERSION}/version.json" "site/firmware/latest/version.json"
+
+          # Update manifest.json version + point at latest (installer should always flash latest)
           python - <<'PY'
-          import json
+          import json, os
           p="site/manifest.json"
           with open(p,"r",encoding="utf-8") as f:
               d=json.load(f)
-          import os
-          d["version"]=os.environ.get("GIT_SHA","dev")
+          v=os.environ["VERSION"]
+          d["version"]=v
+          # ensure paths target latest
+          for b in d.get("builds", []):
+              for part in b.get("parts", []):
+                  if "esp8266" in part["path"]:
+                      part["path"]="./firmware/latest/esp8266.bin"
+                  if "esp32" in part["path"]:
+                      part["path"]="./firmware/latest/esp32_merged.bin"
           with open(p,"w",encoding="utf-8") as f:
               json.dump(d,f,indent=2)
           PY
-
-        env:
-          GIT_SHA: ${{ github.sha }}
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
