@@ -35,7 +35,12 @@ jobs:
       - name: Fix PlatformIO esptool dependency (intelhex)
         shell: bash
         run: |
-          PIO_PY="$HOME/.platformio/penv/bin/python"
+          CORE_DIR="$(pio system info --json-output | python -c "import sys,json; print(json.load(sys.stdin)['core_dir'])")"
+          PIO_PY="$CORE_DIR/penv/bin/python"
+
+          echo "CORE_DIR=$CORE_DIR"
+          echo "PIO_PY=$PIO_PY"
+
           "$PIO_PY" -m pip install --upgrade pip
           "$PIO_PY" -m pip install intelhex
 
