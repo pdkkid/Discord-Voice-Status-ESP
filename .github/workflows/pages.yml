@@ -32,6 +32,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio
 
+      - name: Fix PlatformIO esptool dependency (intelhex)
+        shell: bash
+        run: |
+          PIO_PY="$HOME/.platformio/penv/bin/python"
+          "$PIO_PY" -m pip install --upgrade pip
+          "$PIO_PY" -m pip install intelhex
+
       - name: Compute version
         id: ver
         shell: bash
