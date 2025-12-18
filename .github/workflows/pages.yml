@@ -1,0 +1,79 @@
+name: Build firmware + Deploy Pages
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Build ESP8266 + ESP32
+        run: |
+          pio run -e esp8266
+          pio run -e esp32
+
+      - name: Prepare site
+        run: |
+          rm -rf site
+          mkdir -p site/firmware
+          # Copy web UI
+          cp -r web/* site/
+          # Copy firmware outputs
+          cp .pio/build/esp8266/firmware.bin site/firmware/esp8266.bin
+          cp .pio/build/esp32/firmware_merged.bin site/firmware/esp32_merged.bin
+
+          # (optional) set version in manifest from git sha
+          GIT_SHA=$(git rev-parse --short HEAD)
+          python - <<'PY'
+          import json
+          p="site/manifest.json"
+          with open(p,"r",encoding="utf-8") as f:
+              d=json.load(f)
+          import os
+          d["version"]=os.environ.get("GIT_SHA","dev")
+          with open(p,"w",encoding="utf-8") as f:
+              json.dump(d,f,indent=2)
+          PY
+
+        env:
+          GIT_SHA: ${{ github.sha }}
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
