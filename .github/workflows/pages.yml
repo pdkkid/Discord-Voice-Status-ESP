@@ -71,8 +71,8 @@ jobs:
           cp .pio/build/esp32/firmware_merged.bin "site/firmware/${VERSION}/esp32_merged.bin"
 
           # Also update latest pointers
-          cp "site/firmware/${VERSION}/esp8266.bin" "site/firmware/latest/esp8266.bin"
-          cp "site/firmware/${VERSION}/esp32_merged.bin" "site/firmware/latest/esp32_merged.bin"
+          cp .pio/build/esp32s2/firmware_merged.bin site/firmware/latest/esp32s2_merged.bin
+          cp .pio/build/esp32s2/firmware_merged.bin "site/firmware/${VERSION}/esp32s2_merged.bin"
 
           # Write version.json for OTA clients/servers
           cat > "site/firmware/${VERSION}/version.json" <<EOF
