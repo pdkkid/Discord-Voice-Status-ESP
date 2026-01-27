@@ -162,28 +162,36 @@
       <!-- Step 1: Flash -->
       <div class="card">
         <h2><span class="step-number">1</span>Flash Firmware</h2>
-        <p>Connect your ESP8266 or ESP32 via USB and click the button below.</p>
         
-        <details style="margin: 12px 0; color: var(--text-muted); font-size: 0.9em;">
-          <summary style="cursor: pointer; color: var(--warning);">⚠️ ESP32-S2 Users: Click here first!</summary>
-          <div style="margin-top: 8px; padding: 10px; background: var(--bg); border-radius: 4px;">
-            <p style="margin: 0 0 8px 0;"><strong>ESP32-S2 requires manual bootloader mode:</strong></p>
-            <ol style="margin: 0; padding-left: 20px;">
-              <li>Unplug the device</li>
-              <li>Hold the <strong>0 (BOOT)</strong> button</li>
-              <li>Plug in USB while holding the button</li>
-              <li>Release after 1 second</li>
-              <li>Now click Install below</li>
-            </ol>
+        <!-- ESP8266 / Standard ESP32 -->
+        <div style="margin-bottom: 16px; padding: 12px; background: var(--bg); border-radius: 4px;">
+          <p style="margin: 0 0 8px 0;"><strong>ESP8266 / ESP32 (with USB-UART chip):</strong></p>
+          <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+          <esp-web-install-button id="installBtn" manifest="./manifest.json"></esp-web-install-button>
+        </div>
+        
+        <!-- ESP32-S2 Native USB -->
+        <div style="margin-bottom: 16px; padding: 12px; background: var(--bg); border-radius: 4px; border: 1px solid var(--warning);">
+          <p style="margin: 0 0 8px 0;"><strong style="color: var(--warning);">ESP32-S2 (Native USB - e.g., LOLIN S2 Mini):</strong></p>
+          <ol style="margin: 0 0 12px 0; padding-left: 20px; font-size: 0.9em; color: var(--text-muted);">
+            <li>Unplug the device</li>
+            <li>Hold the <strong>0 (BOOT)</strong> button</li>
+            <li>Plug in USB while holding</li>
+            <li>Release after 1 second</li>
+            <li>Click the button below</li>
+          </ol>
+          <button id="flashS2Btn" onclick="flashESP32S2()">⚡ Flash ESP32-S2</button>
+          <div id="s2Progress" style="margin-top: 8px; display: none;">
+            <div style="background: var(--card); border-radius: 4px; overflow: hidden; height: 20px;">
+              <div id="s2ProgressBar" style="background: var(--primary); height: 100%; width: 0%; transition: width 0.3s;"></div>
+            </div>
+            <span id="s2ProgressText" class="note"></span>
           </div>
-        </details>
-        
-        <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
-        <esp-web-install-button id="installBtn" manifest="./manifest.json"></esp-web-install-button>
+        </div>
         
         <div style="margin-top: 12px;">
           <button id="eraseBtn" class="btn-secondary" onclick="eraseDevice()" style="background: var(--error);">🗑️ Erase Flash</button>
-          <span class="note" style="margin-left: 8px;">Completely wipes the device (ESP32-S2: enter bootloader first)</span>
+          <span class="note" style="margin-left: 8px;">Completely wipes the device</span>
         </div>
         
         <p class="note">After flashing, press RST button, then click "Connect Serial" to configure.</p>
@@ -310,6 +318,122 @@
           } catch (e) {}
           eraseBtn.disabled = false;
           eraseBtn.textContent = '🗑️ Erase Flash';
+        }
+      }
+      
+      async function flashESP32S2() {
+        // Disconnect any existing serial connection first
+        if (port) {
+          try { await disconnectSerial(); } catch (e) {}
+        }
+        
+        const flashBtn = document.getElementById('flashS2Btn');
+        const progressDiv = document.getElementById('s2Progress');
+        const progressBar = document.getElementById('s2ProgressBar');
+        const progressText = document.getElementById('s2ProgressText');
+        
+        flashBtn.disabled = true;
+        flashBtn.textContent = '⏳ Connecting...';
+        progressDiv.style.display = 'block';
+        progressBar.style.width = '0%';
+        progressText.textContent = 'Requesting port...';
+        
+        let flashPort = null;
+        let transport = null;
+        
+        try {
+          // Import ESPLoader
+          const { ESPLoader, Transport } = await import('https://unpkg.com/esptool-js@0.4.3/bundle.js');
+          
+          // Request serial port
+          flashPort = await navigator.serial.requestPort();
+          await flashPort.open({ baudRate: 115200 });
+          
+          transport = new Transport(flashPort, true);
+          
+          progressText.textContent = 'Connecting to bootloader...';
+          progressBar.style.width = '5%';
+          
+          const esploader = new ESPLoader({
+            transport,
+            baudrate: 115200,
+            romBaudrate: 115200,
+            terminal: {
+              clean() {},
+              writeLine(data) { log(data); },
+              write(data) { log(data); }
+            }
+          });
+          
+          const chip = await esploader.main();
+          log('Detected chip: ' + chip);
+          progressText.textContent = 'Detected: ' + chip;
+          progressBar.style.width = '10%';
+          
+          if (!chip.toLowerCase().includes('esp32-s2') && !chip.toLowerCase().includes('esp32s2')) {
+            throw new Error('This button is for ESP32-S2 only. Detected: ' + chip);
+          }
+          
+          // Fetch the firmware
+          progressText.textContent = 'Downloading firmware...';
+          progressBar.style.width = '15%';
+          
+          const manifestResp = await fetch('./manifest.json');
+          const manifest = await manifestResp.json();
+          
+          // Find ESP32-S2 build
+          const s2Build = manifest.builds.find(b => 
+            b.chipFamily === 'ESP32-S2' || 
+            (b.parts && b.parts.some(p => p.path.includes('esp32s2')))
+          );
+          
+          if (!s2Build) {
+            throw new Error('No ESP32-S2 firmware found in manifest');
+          }
+          
+          // Download all parts
+          const fileArray = [];
+          for (const part of s2Build.parts) {
+            progressText.textContent = 'Downloading: ' + part.path;
+            const resp = await fetch(part.path);
+            const data = await resp.arrayBuffer();
+            fileArray.push({ data: new Uint8Array(data), address: part.offset });
+            log('Downloaded: ' + part.path + ' (' + data.byteLength + ' bytes @ 0x' + part.offset.toString(16) + ')');
+          }
+          
+          progressText.textContent = 'Flashing firmware...';
+          progressBar.style.width = '20%';
+          
+          // Flash with progress
+          const flashOptions = {
+            fileArray,
+            flashSize: 'keep',
+            flashMode: 'keep',
+            flashFreq: 'keep',
+            eraseAll: false,
+            compress: true,
+            reportProgress: (fileIndex, written, total) => {
+              const pct = 20 + Math.round((written / total) * 75);
+              progressBar.style.width = pct + '%';
+              progressText.textContent = 'Writing: ' + Math.round((written / total) * 100) + '%';
+            }
+          };
+          
+          await esploader.writeFlash(flashOptions);
+          
+          progressBar.style.width = '100%';
+          progressText.textContent = '✅ Flash complete! Press RST button to boot.';
+          setStatus('✅ ESP32-S2 flashed successfully! Press the RST button.', 'success');
+          
+        } catch (err) {
+          console.error('Flash error:', err);
+          progressText.textContent = '❌ ' + err.message;
+          setStatus('❌ Flash failed: ' + err.message, 'error');
+        } finally {
+          try { if (transport) await transport.disconnect(); } catch (e) {}
+          try { if (flashPort) await flashPort.close(); } catch (e) {}
+          flashBtn.disabled = false;
+          flashBtn.textContent = '⚡ Flash ESP32-S2';
         }
       }
 
