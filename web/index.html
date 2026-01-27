@@ -249,8 +249,17 @@
       }
       
       async function eraseDevice() {
-        if (!confirm('⚠️ This will completely erase the device flash!\\n\\nFor ESP32-S2: Make sure you entered bootloader mode first.\\n\\nContinue?')) {
+        if (!confirm('⚠️ This will completely erase the device flash!\n\nFor ESP32-S2: Make sure you entered bootloader mode first.\n\nContinue?')) {
           return;
+        }
+        
+        // Disconnect any existing serial connection first
+        if (port) {
+          try {
+            await disconnectSerial();
+          } catch (e) {
+            console.log('Disconnect before erase:', e);
+          }
         }
         
         const eraseBtn = document.getElementById('eraseBtn');
@@ -258,15 +267,18 @@
         eraseBtn.textContent = '⏳ Erasing...';
         setStatus('Connecting to device...', 'info');
         
+        let erasePort = null;
+        let transport = null;
+        
         try {
           // Import ESPLoader dynamically
           const { ESPLoader, Transport } = await import('https://unpkg.com/esptool-js@0.4.3/bundle.js');
           
           // Request serial port
-          const erasePort = await navigator.serial.requestPort();
+          erasePort = await navigator.serial.requestPort();
           await erasePort.open({ baudRate: 115200 });
           
-          const transport = new Transport(erasePort, true);
+          transport = new Transport(erasePort, true);
           const esploader = new ESPLoader({
             transport,
             baudrate: 115200,
@@ -285,13 +297,17 @@
           await esploader.eraseFlash();
           
           setStatus('✅ Flash erased successfully! Device is now blank.', 'success');
-          
-          await transport.disconnect();
-          await erasePort.close();
         } catch (err) {
           console.error('Erase error:', err);
           setStatus('❌ Erase failed: ' + err.message, 'error');
         } finally {
+          // Clean up
+          try {
+            if (transport) await transport.disconnect();
+          } catch (e) {}
+          try {
+            if (erasePort) await erasePort.close();
+          } catch (e) {}
           eraseBtn.disabled = false;
           eraseBtn.textContent = '🗑️ Erase Flash';
         }
