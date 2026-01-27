@@ -49,10 +49,10 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-      - name: Build ESP8266 + ESP32
+      - name: Build ESP8266 + ESP32-S2
         run: |
           pio run -e esp8266
-          pio run -e esp32
+          pio run -e esp32s2
         env:
           FW_VERSION: ${{ steps.ver.outputs.VERSION }}
 
@@ -68,11 +68,11 @@ jobs:
 
           # Copy firmware artifacts (versioned)
           cp .pio/build/esp8266/firmware.bin "site/firmware/${VERSION}/esp8266.bin"
-          cp .pio/build/esp32/firmware_merged.bin "site/firmware/${VERSION}/esp32_merged.bin"
+          cp .pio/build/esp32s2/firmware_merged.bin "site/firmware/${VERSION}/esp32s2_merged.bin"
 
           # Also update latest pointers
+          cp .pio/build/esp8266/firmware.bin site/firmware/latest/esp8266.bin
           cp .pio/build/esp32s2/firmware_merged.bin site/firmware/latest/esp32s2_merged.bin
-          cp .pio/build/esp32s2/firmware_merged.bin "site/firmware/${VERSION}/esp32s2_merged.bin"
 
           # Write version.json for OTA clients/servers
           cat > "site/firmware/${VERSION}/version.json" <<EOF
@@ -93,8 +93,8 @@ jobs:
               for part in b.get("parts", []):
                   if "esp8266" in part["path"]:
                       part["path"]="./firmware/latest/esp8266.bin"
-                  if "esp32" in part["path"]:
-                      part["path"]="./firmware/latest/esp32_merged.bin"
+                  if "esp32s2" in part["path"]:
+                      part["path"]="./firmware/latest/esp32s2_merged.bin"
           with open(p,"w",encoding="utf-8") as f:
               json.dump(d,f,indent=2)
           PY
