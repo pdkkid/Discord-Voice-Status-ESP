@@ -173,7 +173,13 @@
       <!-- Step 2: Configure -->
       <div class="card">
         <h2><span class="step-number">2</span>Configure Device</h2>
-        <p>Enter your WebSocket URL and Auth Token, then send to device via serial.</p>
+        <p>Enter your settings and send to device via serial.</p>
+        
+        <label for="wifiSsid">WiFi Network Name (SSID)</label>
+        <input type="text" id="wifiSsid" placeholder="Your WiFi network name" autocomplete="off" />
+        
+        <label for="wifiPass">WiFi Password</label>
+        <input type="password" id="wifiPass" placeholder="Your WiFi password" />
         
         <label for="wsUrl">WebSocket URL</label>
         <input type="url" id="wsUrl" placeholder="wss://your-server.com/ws" />
@@ -198,8 +204,8 @@
 
       <!-- Step 3: WiFi -->
       <div class="card">
-        <h2><span class="step-number">3</span>Connect to WiFi</h2>
-        <p>After configuration, connect to the <strong>DiscordVoiceSetup</strong> WiFi network to configure your WiFi credentials and 802.1X settings (if needed).</p>
+        <h2><span class="step-number">3</span>Alternative: Captive Portal</h2>
+        <p>If you prefer, skip WiFi config above and connect to the <strong>DiscordVoiceSetup</strong> WiFi network after the device boots to configure via captive portal (also supports 802.1X Enterprise).</p>
       </div>
     </div>
 
@@ -323,6 +329,7 @@
         } else if (line.startsWith('CONFIG:')) {
           try {
             const config = JSON.parse(line.substring(7));
+            document.getElementById('wifiSsid').value = config.wifiSsid || '';
             document.getElementById('wsUrl').value = config.wsUrl || '';
             setStatus('Config loaded. Version: ' + config.version, 'success');
           } catch (e) {
@@ -345,6 +352,8 @@
       }
 
       async function sendConfig() {
+        const wifiSsid = document.getElementById('wifiSsid').value.trim();
+        const wifiPass = document.getElementById('wifiPass').value.trim();
         const wsUrl = document.getElementById('wsUrl').value.trim();
         const authToken = document.getElementById('authToken').value.trim();
         
@@ -355,6 +364,8 @@
         
         const config = { wsUrl };
         if (authToken) config.authToken = authToken;
+        if (wifiSsid) config.wifiSsid = wifiSsid;
+        if (wifiPass) config.wifiPass = wifiPass;
         
         await sendCommand('CONFIG:' + JSON.stringify(config));
         setStatus('Sending configuration...', 'info');

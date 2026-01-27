@@ -69,6 +69,9 @@ struct AppConfig
 {
   String wsUrl;
   String authToken;
+  // WiFi credentials (optional - can also use captive portal)
+  String wifiSsid;
+  String wifiPass;
   // 802.1X WPA Enterprise credentials
   String eapIdentity;
   String eapPassword;
@@ -122,6 +125,8 @@ static bool loadConfig(AppConfig &out)
 
   out.wsUrl = doc["wsUrl"] | DEFAULT_WS_URL;
   out.authToken = doc["authToken"] | DEFAULT_AUTH_TOKEN;
+  out.wifiSsid = doc["wifiSsid"] | "";
+  out.wifiPass = doc["wifiPass"] | "";
   out.eapIdentity = doc["eapIdentity"] | DEFAULT_EAP_IDENTITY;
   out.eapPassword = doc["eapPassword"] | DEFAULT_EAP_PASSWORD;
   return true;
@@ -132,9 +137,11 @@ static bool saveConfig(const AppConfig &in)
   if (!ensureFS())
     return false;
 
-  StaticJsonDocument<768> doc;
+  StaticJsonDocument<1024> doc;
   doc["wsUrl"] = in.wsUrl;
   doc["authToken"] = in.authToken;
+  doc["wifiSsid"] = in.wifiSsid;
+  doc["wifiPass"] = in.wifiPass;
   doc["eapIdentity"] = in.eapIdentity;
   doc["eapPassword"] = in.eapPassword;
 
@@ -348,6 +355,12 @@ static bool tryConnectWifiExplicit(const char *ssid, const char *pass, uint8_t t
     delay(250);
   }
   return false;
+}
+
+// Check if we have WiFi credentials configured via serial
+static bool hasSerialWifiCreds()
+{
+  return cfg.wifiSsid.length() > 0;
 }
 
 // Only attempt WiFi.begin() if creds exist
@@ -810,6 +823,16 @@ static void handleSerialCommand(const String &cmd)
         cfg.eapPassword = doc["eapPassword"].as<String>();
         changed = true;
       }
+      if (doc.containsKey("wifiSsid"))
+      {
+        cfg.wifiSsid = doc["wifiSsid"].as<String>();
+        changed = true;
+      }
+      if (doc.containsKey("wifiPass"))
+      {
+        cfg.wifiPass = doc["wifiPass"].as<String>();
+        changed = true;
+      }
       
       if (changed)
       {
@@ -835,6 +858,8 @@ static void handleSerialCommand(const String &cmd)
     StaticJsonDocument<512> doc;
     doc["wsUrl"] = cfg.wsUrl;
     doc["authToken"] = cfg.authToken.length() > 0 ? "****" : "";
+    doc["wifiSsid"] = cfg.wifiSsid;
+    doc["hasWifiPass"] = cfg.wifiPass.length() > 0;
     doc["eapIdentity"] = cfg.eapIdentity;
     doc["hasEapPassword"] = cfg.eapPassword.length() > 0;
     doc["version"] = FW_VERSION_STR;
@@ -962,54 +987,64 @@ void setup()
   // Now try to connect to WiFi
   if (WiFi.status() != WL_CONNECTED)
   {
-    // Prefer saved creds first (if present)
-    if (hasSavedWiFiCreds())
+    bool wifiConnected = false;
+    
+    // First priority: WiFi configured via serial (cfg.wifiSsid)
+    if (hasSerialWifiCreds())
     {
-      // Try 802.1X first if credentials are available
+      Serial.printf("📶 Trying serial-configured WiFi: %s\n", cfg.wifiSsid.c_str());
       if (hasEapCredentials())
       {
-        if (!tryConnectWifiEnterprise(WiFi.SSID().c_str(), cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
-        {
-          Serial.println("🛠 802.1X WiFi failed -> trying standard connection");
-          if (!tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
-          {
-            Serial.println("🛠 Saved WiFi failed -> portal");
-            startConfigPortalAndSave();
-          }
-        }
+        wifiConnected = tryConnectWifiEnterprise(cfg.wifiSsid.c_str(), cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
       }
-      else if (!tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+      else
       {
-        Serial.println("🛠 Saved WiFi failed -> portal");
-        startConfigPortalAndSave();
+        wifiConnected = tryConnectWifiExplicit(cfg.wifiSsid.c_str(), cfg.wifiPass.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
       }
     }
-    else if (defaultsHaveWifi())
+    
+    // Second priority: Previously saved WiFi creds (from WiFiManager)
+    if (!wifiConnected && hasSavedWiFiCreds())
     {
-      // Try 802.1X first if credentials are available
+      Serial.println("📶 Trying saved WiFi credentials...");
       if (hasEapCredentials())
       {
-        if (!tryConnectWifiEnterprise(DEFAULT_WIFI_SSID, cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+        wifiConnected = tryConnectWifiEnterprise(WiFi.SSID().c_str(), cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
+        if (!wifiConnected)
         {
           Serial.println("🛠 802.1X WiFi failed -> trying standard connection");
-          if (!tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
-          {
-            Serial.println("🛠 Default WiFi failed -> portal");
-            startConfigPortalAndSave();
-          }
+          wifiConnected = tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
         }
       }
-      // No saved creds: try default WiFi
-      else if (!tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+      else
       {
-        Serial.println("🛠 Default WiFi failed -> portal");
-        startConfigPortalAndSave();
+        wifiConnected = tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
       }
     }
-    else
+    
+    // Third priority: Compile-time defaults
+    if (!wifiConnected && defaultsHaveWifi())
     {
-      // No saved creds and no default WiFi
-      Serial.println("🛠 No saved WiFi and no DEFAULT_WIFI_SSID -> portal");
+      Serial.println("📶 Trying default WiFi credentials...");
+      if (hasEapCredentials())
+      {
+        wifiConnected = tryConnectWifiEnterprise(DEFAULT_WIFI_SSID, cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
+        if (!wifiConnected)
+        {
+          Serial.println("🛠 802.1X WiFi failed -> trying standard connection");
+          wifiConnected = tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
+        }
+      }
+      else
+      {
+        wifiConnected = tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
+      }
+    }
+    
+    // Fall back to portal if nothing worked
+    if (!wifiConnected)
+    {
+      Serial.println("🛠 All WiFi connection attempts failed -> portal");
       startConfigPortalAndSave();
     }
   }
@@ -1038,51 +1073,59 @@ void loop()
     setLed(false);
     webSocket.disconnect();
 
-    if (hasSavedWiFiCreds())
+    bool wifiConnected = false;
+    
+    // First priority: WiFi configured via serial
+    if (hasSerialWifiCreds())
     {
-      // Try 802.1X first if credentials are available
       if (hasEapCredentials())
       {
-        if (!tryConnectWifiEnterprise(WiFi.SSID().c_str(), cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
-        {
-          Serial.println("🛠 802.1X WiFi failed -> trying standard connection");
-          if (!tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
-          {
-            Serial.println("🛠 WiFi failed -> portal");
-            startConfigPortalAndSave();
-          }
-        }
+        wifiConnected = tryConnectWifiEnterprise(cfg.wifiSsid.c_str(), cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
       }
-      else if (!tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+      else
       {
-        Serial.println("🛠 WiFi failed -> portal");
-        startConfigPortalAndSave();
+        wifiConnected = tryConnectWifiExplicit(cfg.wifiSsid.c_str(), cfg.wifiPass.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
       }
     }
-    else if (defaultsHaveWifi())
+    
+    // Second priority: Saved WiFi creds
+    if (!wifiConnected && hasSavedWiFiCreds())
     {
-      // Try 802.1X first if credentials are available
       if (hasEapCredentials())
       {
-        if (!tryConnectWifiEnterprise(DEFAULT_WIFI_SSID, cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+        wifiConnected = tryConnectWifiEnterprise(WiFi.SSID().c_str(), cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
+        if (!wifiConnected)
         {
-          Serial.println("🛠 802.1X WiFi failed -> trying standard connection");
-          if (!tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
-          {
-            Serial.println("🛠 Default WiFi failed -> portal");
-            startConfigPortalAndSave();
-          }
+          wifiConnected = tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
         }
       }
-      else if (!tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+      else
       {
-        Serial.println("🛠 Default WiFi failed -> portal");
-        startConfigPortalAndSave();
+        wifiConnected = tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
       }
     }
-    else
+    
+    // Third priority: Compile-time defaults
+    if (!wifiConnected && defaultsHaveWifi())
     {
-      Serial.println("📡 WiFi creds missing -> portal");
+      if (hasEapCredentials())
+      {
+        wifiConnected = tryConnectWifiEnterprise(DEFAULT_WIFI_SSID, cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
+        if (!wifiConnected)
+        {
+          wifiConnected = tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
+        }
+      }
+      else
+      {
+        wifiConnected = tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS);
+      }
+    }
+    
+    // Fall back to portal
+    if (!wifiConnected)
+    {
+      Serial.println("📡 WiFi reconnection failed -> portal");
       startConfigPortalAndSave();
     }
 
