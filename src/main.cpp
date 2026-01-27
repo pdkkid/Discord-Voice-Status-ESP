@@ -5,11 +5,17 @@
 #include <LittleFS.h>
 #include <ESP8266httpUpdate.h>
 #include <WiFiClientSecureBearSSL.h>
+extern "C" {
+  #include "user_interface.h"
+  #include "wpa2_enterprise.h"
+}
 #else
 #include <WiFi.h>
 #include <LittleFS.h>
 #include <HTTPUpdate.h>
 #include <WiFiClientSecure.h>
+#include "esp_wpa2.h"
+#include "esp_wifi.h"
 #endif
 
 #include <WiFiManager.h>
@@ -22,6 +28,9 @@ static const char *DEFAULT_WS_URL = "";
 static const char *DEFAULT_AUTH_TOKEN = "";
 static const char *DEFAULT_WIFI_SSID = "";
 static const char *DEFAULT_WIFI_PASS = "";
+// 802.1X (WPA Enterprise) credentials - leave empty if not using enterprise WiFi
+static const char *DEFAULT_EAP_IDENTITY = "";
+static const char *DEFAULT_EAP_PASSWORD = "";
 // ===================================================
 
 // Firmware version string (bump this when you want devices to accept new versions)
@@ -60,6 +69,9 @@ struct AppConfig
 {
   String wsUrl;
   String authToken;
+  // 802.1X WPA Enterprise credentials
+  String eapIdentity;
+  String eapPassword;
 };
 static AppConfig cfg;
 
@@ -110,6 +122,8 @@ static bool loadConfig(AppConfig &out)
 
   out.wsUrl = doc["wsUrl"] | DEFAULT_WS_URL;
   out.authToken = doc["authToken"] | DEFAULT_AUTH_TOKEN;
+  out.eapIdentity = doc["eapIdentity"] | DEFAULT_EAP_IDENTITY;
+  out.eapPassword = doc["eapPassword"] | DEFAULT_EAP_PASSWORD;
   return true;
 }
 
@@ -118,9 +132,11 @@ static bool saveConfig(const AppConfig &in)
   if (!ensureFS())
     return false;
 
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<768> doc;
   doc["wsUrl"] = in.wsUrl;
   doc["authToken"] = in.authToken;
+  doc["eapIdentity"] = in.eapIdentity;
+  doc["eapPassword"] = in.eapPassword;
 
   File f = LittleFS.open(CONFIG_PATH, "w");
   if (!f)
@@ -188,6 +204,112 @@ static bool defaultsHaveWifi()
 static bool defaultsHaveAppConfig()
 {
   return !isBlank(DEFAULT_WS_URL) && !isBlank(DEFAULT_AUTH_TOKEN);
+}
+
+// Check if 802.1X enterprise authentication is configured
+static bool hasEapCredentials()
+{
+  return cfg.eapIdentity.length() > 0 && cfg.eapPassword.length() > 0;
+}
+
+// Try connecting using 802.1X WPA Enterprise
+static bool tryConnectWifiEnterprise(const char *ssid, const char *identity, const char *password, uint8_t tries, uint32_t perTryTimeoutMs)
+{
+  Serial.println("🔐 Configuring 802.1X WPA Enterprise...");
+  Serial.printf("   SSID: %s\n", ssid);
+  Serial.printf("   Identity: %s\n", identity);
+  Serial.printf("   Password: %s\n", password[0] ? "****" : "(empty)");
+  
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  delay(200);
+  WiFi.mode(WIFI_STA);
+  delay(100);
+
+#if defined(ESP8266)
+  // Configure WPA2 Enterprise for ESP8266
+  Serial.println("🔐 Setting up ESP8266 WPA2 Enterprise...");
+  wifi_station_clear_enterprise_identity();
+  wifi_station_set_enterprise_identity((uint8_t *)identity, strlen(identity));
+  wifi_station_set_enterprise_username((uint8_t *)identity, strlen(identity));
+  wifi_station_set_enterprise_password((uint8_t *)password, strlen(password));
+  int ret = wifi_station_set_wpa2_enterprise_auth(1);
+  Serial.printf("🔐 wifi_station_set_wpa2_enterprise_auth returned: %d\n", ret);
+#else
+  // Configure WPA2 Enterprise for ESP32
+  // Must initialize WiFi first before setting enterprise config
+  Serial.println("🔐 Setting up ESP32 WPA2 Enterprise...");
+  
+  // Initialize WiFi to ensure it's ready
+  esp_wifi_set_mode(WIFI_MODE_STA);
+  esp_wifi_start();
+  delay(100);
+  
+  esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)identity, strlen(identity));
+  esp_wifi_sta_wpa2_ent_set_username((uint8_t *)identity, strlen(identity));
+  esp_wifi_sta_wpa2_ent_set_password((uint8_t *)password, strlen(password));
+  esp_err_t err = esp_wifi_sta_wpa2_ent_enable();
+  Serial.printf("🔐 esp_wifi_sta_wpa2_ent_enable returned: %d (0=OK)\n", err);
+  if (err != ESP_OK) {
+    Serial.printf("❌ WPA2 Enterprise setup failed with error: 0x%x\n", err);
+  }
+#endif
+
+  for (uint8_t i = 1; i <= tries; i++)
+  {
+    Serial.printf("📶 WiFi 802.1X connect attempt %u/%u to SSID '%s' as '%s'...\n", i, tries, ssid, identity);
+
+    WiFi.begin(ssid); // No password for WPA Enterprise - uses EAP credentials
+
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - start) < perTryTimeoutMs)
+    {
+      delay(200);
+      Serial.print(".");
+    }
+    Serial.println();
+
+    wl_status_t status = WiFi.status();
+    Serial.printf("📶 WiFi status after attempt: %d\n", status);
+    
+    if (status == WL_CONNECTED)
+    {
+      Serial.print("✅ WiFi 802.1X connected. IP: ");
+      Serial.println(WiFi.localIP());
+      return true;
+    }
+    
+    // Log specific failure reasons
+    switch (status) {
+      case WL_NO_SSID_AVAIL:
+        Serial.println("❌ SSID not found");
+        break;
+      case WL_CONNECT_FAILED:
+        Serial.println("❌ Connection failed (wrong password or auth rejected)");
+        break;
+      case WL_DISCONNECTED:
+        Serial.println("❌ Disconnected");
+        break;
+      default:
+        Serial.printf("❌ Connection failed with status: %d\n", status);
+        break;
+    }
+
+    WiFi.disconnect(true);
+    delay(250);
+  }
+
+  Serial.println("❌ All 802.1X connection attempts failed");
+  
+  // Disable WPA2 Enterprise on failure to allow normal connection attempts
+#if defined(ESP8266)
+  Serial.println("🔐 Disabling WPA2 Enterprise mode");
+  wifi_station_set_wpa2_enterprise_auth(0);
+#else
+  Serial.println("🔐 Disabling WPA2 Enterprise mode");
+  esp_wifi_sta_wpa2_ent_disable();
+#endif
+  return false;
 }
 
 // Try connecting to a specific SSID/pass (no saving). Returns true if connected.
@@ -267,26 +389,51 @@ static void startConfigPortalAndSave()
 
   static char wsUrlBuf[200];
   static char tokenBuf[140];
+  static char eapIdentityBuf[100];
+  static char eapPasswordBuf[100];
 
   memset(wsUrlBuf, 0, sizeof(wsUrlBuf));
   memset(tokenBuf, 0, sizeof(tokenBuf));
+  memset(eapIdentityBuf, 0, sizeof(eapIdentityBuf));
+  memset(eapPasswordBuf, 0, sizeof(eapPasswordBuf));
 
   strlcpy(wsUrlBuf, cfg.wsUrl.c_str(), sizeof(wsUrlBuf));
   strlcpy(tokenBuf, cfg.authToken.c_str(), sizeof(tokenBuf));
+  strlcpy(eapIdentityBuf, cfg.eapIdentity.c_str(), sizeof(eapIdentityBuf));
+  strlcpy(eapPasswordBuf, cfg.eapPassword.c_str(), sizeof(eapPasswordBuf));
 
   WiFiManagerParameter p_wsurl("wsurl", "WebSocket URL (ws:// or wss://)", wsUrlBuf, sizeof(wsUrlBuf));
   WiFiManagerParameter p_token("authtok", "Auth Token", tokenBuf, sizeof(tokenBuf));
+  
+  // 802.1X Enterprise WiFi parameters
+  WiFiManagerParameter p_eap_header("<hr><h3>802.1X Enterprise WiFi (optional)</h3><p style='font-size:0.9em;color:#666;'>For corporate/university networks using WPA2-Enterprise authentication. Leave blank for standard home WiFi.</p>");
+  WiFiManagerParameter p_eap_identity("eapid", "802.1X Username/Identity", eapIdentityBuf, sizeof(eapIdentityBuf), "autocapitalize='off' autocorrect='off' autocomplete='username'");
+  WiFiManagerParameter p_eap_password("eappwd", "802.1X Password", eapPasswordBuf, sizeof(eapPasswordBuf), "type='password' autocapitalize='off' autocomplete='current-password'");
 
   wm.addParameter(&p_wsurl);
   wm.addParameter(&p_token);
+  wm.addParameter(&p_eap_header);
+  wm.addParameter(&p_eap_identity);
+  wm.addParameter(&p_eap_password);
+  
+  // Don't let WiFiManager try to connect - we'll handle it ourselves for 802.1X support
+  wm.setBreakAfterConfig(true);
+  // Set a very short connect timeout so WiFiManager's connection attempt fails fast
+  wm.setConnectTimeout(1);
 
   Serial.println("🛠 Starting config portal...");
   setLed(false);
 
-  bool ok = wm.startConfigPortal("DiscordVoiceSetup");
-  if (!ok)
+  wm.startConfigPortal("DiscordVoiceSetup");
+  
+  // Get the SSID/password that was entered in the portal
+  String portalSSID = wm.getWiFiSSID();
+  String portalPass = wm.getWiFiPass();
+  
+  // Check if user actually submitted config (SSID will be set)
+  if (portalSSID.length() == 0)
   {
-    Serial.println("⚠️ Config portal timed out/failed");
+    Serial.println("⚠️ Config portal closed without submitting config");
     return;
   }
 
@@ -294,11 +441,39 @@ static void startConfigPortalAndSave()
   cfg.wsUrl.trim();
   cfg.authToken = String(p_token.getValue());
   cfg.authToken.trim();
+  cfg.eapIdentity = String(p_eap_identity.getValue());
+  cfg.eapIdentity.trim();
+  cfg.eapPassword = String(p_eap_password.getValue());
+  cfg.eapPassword.trim();
 
   saveConfig(cfg);
-
-  Serial.print("✅ WiFi connected. IP: ");
-  Serial.println(WiFi.localIP());
+  
+  Serial.printf("🔐 Portal closed. SSID: %s\n", portalSSID.c_str());
+  Serial.printf("🔐 802.1X Identity: %s\n", cfg.eapIdentity.length() > 0 ? cfg.eapIdentity.c_str() : "(not set)");
+  
+  // Now connect with 802.1X if credentials are provided
+  if (cfg.eapIdentity.length() > 0 && cfg.eapPassword.length() > 0)
+  {
+    Serial.println("🔐 Using 802.1X Enterprise authentication...");
+    if (tryConnectWifiEnterprise(portalSSID.c_str(), cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+    {
+      Serial.print("✅ WiFi 802.1X connected. IP: ");
+      Serial.println(WiFi.localIP());
+      return;
+    }
+    Serial.println("❌ 802.1X connection failed, trying standard connection...");
+  }
+  
+  // Standard connection (or fallback)
+  if (tryConnectWifiExplicit(portalSSID.c_str(), portalPass.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+  {
+    Serial.print("✅ WiFi connected. IP: ");
+    Serial.println(WiFi.localIP());
+  }
+  else
+  {
+    Serial.println("❌ WiFi connection failed");
+  }
 }
 
 // ---------------- OTA ----------------
@@ -606,6 +781,8 @@ void setup()
 
   cfg.wsUrl = DEFAULT_WS_URL;
   cfg.authToken = DEFAULT_AUTH_TOKEN;
+  cfg.eapIdentity = DEFAULT_EAP_IDENTITY;
+  cfg.eapPassword = DEFAULT_EAP_PASSWORD;
   loadConfig(cfg);
 
   if (FORCE_PORTAL_PIN >= 0)
@@ -628,7 +805,20 @@ void setup()
     // Prefer saved creds first (if present)
     if (hasSavedWiFiCreds())
     {
-      if (!tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+      // Try 802.1X first if credentials are available
+      if (hasEapCredentials())
+      {
+        if (!tryConnectWifiEnterprise(WiFi.SSID().c_str(), cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+        {
+          Serial.println("🛠 802.1X WiFi failed -> trying standard connection");
+          if (!tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+          {
+            Serial.println("🛠 Saved WiFi failed -> portal");
+            startConfigPortalAndSave();
+          }
+        }
+      }
+      else if (!tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
       {
         Serial.println("🛠 Saved WiFi failed -> portal");
         startConfigPortalAndSave();
@@ -636,8 +826,21 @@ void setup()
     }
     else if (defaultsHaveWifi())
     {
+      // Try 802.1X first if credentials are available
+      if (hasEapCredentials())
+      {
+        if (!tryConnectWifiEnterprise(DEFAULT_WIFI_SSID, cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+        {
+          Serial.println("🛠 802.1X WiFi failed -> trying standard connection");
+          if (!tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+          {
+            Serial.println("🛠 Default WiFi failed -> portal");
+            startConfigPortalAndSave();
+          }
+        }
+      }
       // No saved creds: try default WiFi
-      if (!tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+      else if (!tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
       {
         Serial.println("🛠 Default WiFi failed -> portal");
         startConfigPortalAndSave();
@@ -665,7 +868,20 @@ void loop()
 
     if (hasSavedWiFiCreds())
     {
-      if (!tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+      // Try 802.1X first if credentials are available
+      if (hasEapCredentials())
+      {
+        if (!tryConnectWifiEnterprise(WiFi.SSID().c_str(), cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+        {
+          Serial.println("🛠 802.1X WiFi failed -> trying standard connection");
+          if (!tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+          {
+            Serial.println("🛠 WiFi failed -> portal");
+            startConfigPortalAndSave();
+          }
+        }
+      }
+      else if (!tryConnectWifiSaved(WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
       {
         Serial.println("🛠 WiFi failed -> portal");
         startConfigPortalAndSave();
@@ -673,7 +889,20 @@ void loop()
     }
     else if (defaultsHaveWifi())
     {
-      if (!tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+      // Try 802.1X first if credentials are available
+      if (hasEapCredentials())
+      {
+        if (!tryConnectWifiEnterprise(DEFAULT_WIFI_SSID, cfg.eapIdentity.c_str(), cfg.eapPassword.c_str(), WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+        {
+          Serial.println("🛠 802.1X WiFi failed -> trying standard connection");
+          if (!tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
+          {
+            Serial.println("🛠 Default WiFi failed -> portal");
+            startConfigPortalAndSave();
+          }
+        }
+      }
+      else if (!tryConnectWifiExplicit(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASS, WIFI_CONNECT_TRIES, WIFI_TRY_TIMEOUT_MS))
       {
         Serial.println("🛠 Default WiFi failed -> portal");
         startConfigPortalAndSave();
@@ -689,6 +918,84 @@ void loop()
   }
 
   webSocket.loop();
+
+  // Handle serial commands for web-based configuration
+  if (Serial.available())
+  {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    
+    // CONFIG:{"wsUrl":"...","authToken":"..."}
+    if (cmd.startsWith("CONFIG:"))
+    {
+      String json = cmd.substring(7);
+      StaticJsonDocument<512> doc;
+      auto err = deserializeJson(doc, json);
+      if (!err)
+      {
+        bool changed = false;
+        
+        if (doc.containsKey("wsUrl"))
+        {
+          cfg.wsUrl = doc["wsUrl"].as<String>();
+          changed = true;
+        }
+        if (doc.containsKey("authToken"))
+        {
+          cfg.authToken = doc["authToken"].as<String>();
+          changed = true;
+        }
+        if (doc.containsKey("eapIdentity"))
+        {
+          cfg.eapIdentity = doc["eapIdentity"].as<String>();
+          changed = true;
+        }
+        if (doc.containsKey("eapPassword"))
+        {
+          cfg.eapPassword = doc["eapPassword"].as<String>();
+          changed = true;
+        }
+        
+        if (changed)
+        {
+          saveConfig(cfg);
+          Serial.println("OK:CONFIG_SAVED");
+        }
+        else
+        {
+          Serial.println("OK:NO_CHANGES");
+        }
+      }
+      else
+      {
+        Serial.println("ERR:INVALID_JSON");
+      }
+    }
+    else if (cmd == "GET_CONFIG")
+    {
+      StaticJsonDocument<512> doc;
+      doc["wsUrl"] = cfg.wsUrl;
+      doc["authToken"] = cfg.authToken.length() > 0 ? "****" : "";
+      doc["eapIdentity"] = cfg.eapIdentity;
+      doc["hasEapPassword"] = cfg.eapPassword.length() > 0;
+      doc["version"] = FW_VERSION_STR;
+      Serial.print("CONFIG:");
+      serializeJson(doc, Serial);
+      Serial.println();
+    }
+    else if (cmd == "REBOOT")
+    {
+      Serial.println("OK:REBOOTING");
+      delay(100);
+      ESP.restart();
+    }
+    else if (cmd == "PORTAL")
+    {
+      Serial.println("OK:STARTING_PORTAL");
+      startConfigPortalAndSave();
+      setupWebSocketFromConfig();
+    }
+  }
 
   // Manual reconnect pacing
   uint32_t now = millis();
