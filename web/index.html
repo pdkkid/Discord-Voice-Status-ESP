@@ -165,9 +165,9 @@
         <p>Connect your ESP8266 or ESP32 via USB and click the button below.</p>
         
         <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
-        <esp-web-install-button manifest="./manifest.json"></esp-web-install-button>
+        <esp-web-install-button id="installBtn" manifest="./manifest.json"></esp-web-install-button>
         
-        <p class="note">After flashing, the device will restart automatically.</p>
+        <p class="note">After flashing, click "Connect Serial" within 30 seconds to configure.</p>
       </div>
 
       <!-- Step 2: Configure -->
@@ -183,6 +183,7 @@
         
         <div class="flex-row">
           <button id="connectBtn" onclick="connectSerial()">Connect Serial</button>
+          <button id="disconnectBtn" class="btn-secondary" onclick="disconnectSerial()" disabled>Disconnect</button>
           <button id="sendConfigBtn" onclick="sendConfig()" disabled>Send Config</button>
         </div>
         
@@ -207,6 +208,7 @@
       let reader = null;
       let writer = null;
       let readBuffer = '';
+      let isReading = false;
 
       function setStatus(message, type = 'info') {
         const el = document.getElementById('status');
@@ -221,6 +223,15 @@
         el.scrollTop = el.scrollHeight;
       }
 
+      function updateButtons(connected) {
+        document.getElementById('connectBtn').textContent = connected ? 'Connected ✓' : 'Connect Serial';
+        document.getElementById('connectBtn').disabled = connected;
+        document.getElementById('disconnectBtn').disabled = !connected;
+        document.getElementById('sendConfigBtn').disabled = !connected;
+        document.getElementById('getConfigBtn').disabled = !connected;
+        document.getElementById('rebootBtn').disabled = !connected;
+      }
+
       async function connectSerial() {
         try {
           port = await navigator.serial.requestPort();
@@ -228,13 +239,9 @@
           
           writer = port.writable.getWriter();
           reader = port.readable.getReader();
+          isReading = true;
           
-          document.getElementById('connectBtn').textContent = 'Connected ✓';
-          document.getElementById('connectBtn').disabled = true;
-          document.getElementById('sendConfigBtn').disabled = false;
-          document.getElementById('getConfigBtn').disabled = false;
-          document.getElementById('rebootBtn').disabled = false;
-          
+          updateButtons(true);
           setStatus('Connected! Entering config mode...', 'info');
           
           // Start reading
@@ -247,11 +254,42 @@
         }
       }
 
+      async function disconnectSerial() {
+        try {
+          isReading = false;
+          
+          if (reader) {
+            await reader.cancel();
+            reader.releaseLock();
+            reader = null;
+          }
+          if (writer) {
+            writer.releaseLock();
+            writer = null;
+          }
+          if (port) {
+            await port.close();
+            port = null;
+          }
+          
+          updateButtons(false);
+          setStatus('Disconnected', 'info');
+        } catch (err) {
+          console.error('Disconnect error:', err);
+          // Reset state anyway
+          reader = null;
+          writer = null;
+          port = null;
+          updateButtons(false);
+          setStatus('Disconnected', 'info');
+        }
+      }
+
       async function readLoop() {
         try {
-          while (true) {
+          while (isReading) {
             const { value, done } = await reader.read();
-            if (done) break;
+            if (done || !isReading) break;
             
             const text = new TextDecoder().decode(value);
             readBuffer += text;
@@ -269,7 +307,7 @@
             }
           }
         } catch (err) {
-          if (err.name !== 'NetworkError') {
+          if (err.name !== 'NetworkError' && isReading) {
             console.error('Read error:', err);
           }
         }
@@ -338,6 +376,26 @@
         document.getElementById('status').className = 'status error';
         document.getElementById('connectBtn').disabled = true;
       }
+
+      // Listen for ESP Web Tools install complete event
+      document.addEventListener('DOMContentLoaded', () => {
+        const installBtn = document.getElementById('installBtn');
+        if (installBtn) {
+          installBtn.addEventListener('state-changed', (e) => {
+            if (e.detail.state === 'finished') {
+              setStatus('✅ Flash complete! Click "Connect Serial" now to configure.', 'success');
+              // Highlight the connect button
+              document.getElementById('connectBtn').style.animation = 'pulse 1s infinite';
+            }
+          });
+        }
+      });
     </script>
+    <style>
+      @keyframes pulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(88, 101, 242, 0.7); }
+        50% { box-shadow: 0 0 0 10px rgba(88, 101, 242, 0); }
+      }
+    </style>
   </body>
 </html>

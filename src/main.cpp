@@ -877,11 +877,11 @@ void setup()
 
   // Brief window to catch WEB_CONFIG command from the web UI
   // If WEB_CONFIG is received, enter extended configuration mode
-  Serial.println("⏳ Send WEB_CONFIG within 5s for serial configuration...");
+  Serial.println("⏳ Send WEB_CONFIG within 30s for serial configuration...");
   uint32_t waitStart = millis();
   bool webConfigMode = false;
   
-  while (millis() - waitStart < 5000)
+  while (millis() - waitStart < 30000)
   {
     if (Serial.available())
     {
