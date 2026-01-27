@@ -4,17 +4,333 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Discord Voice Status ESP Installer</title>
+    <style>
+      :root {
+        --primary: #5865F2;
+        --primary-dark: #4752C4;
+        --bg: #36393f;
+        --bg-secondary: #2f3136;
+        --text: #dcddde;
+        --text-muted: #72767d;
+        --success: #43b581;
+        --error: #f04747;
+      }
+      * { box-sizing: border-box; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        margin: 0;
+        padding: 20px;
+        min-height: 100vh;
+      }
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+      }
+      h1 {
+        color: #fff;
+        margin-bottom: 8px;
+      }
+      .subtitle {
+        color: var(--text-muted);
+        margin-bottom: 24px;
+      }
+      .card {
+        background: var(--bg-secondary);
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 16px;
+      }
+      .card h2 {
+        margin-top: 0;
+        font-size: 1.1em;
+        color: #fff;
+      }
+      .step-number {
+        display: inline-block;
+        width: 28px;
+        height: 28px;
+        background: var(--primary);
+        border-radius: 50%;
+        text-align: center;
+        line-height: 28px;
+        margin-right: 10px;
+        font-weight: bold;
+      }
+      label {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--text-muted);
+        font-size: 0.9em;
+        text-transform: uppercase;
+        font-weight: 600;
+      }
+      input[type="text"], input[type="password"], input[type="url"] {
+        width: 100%;
+        padding: 10px 12px;
+        border: none;
+        border-radius: 4px;
+        background: var(--bg);
+        color: var(--text);
+        font-size: 1em;
+        margin-bottom: 12px;
+      }
+      input:focus {
+        outline: 2px solid var(--primary);
+      }
+      button {
+        background: var(--primary);
+        color: #fff;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 4px;
+        font-size: 1em;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      button:hover {
+        background: var(--primary-dark);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .btn-secondary {
+        background: var(--bg);
+      }
+      .btn-secondary:hover {
+        background: #40444b;
+      }
+      .status {
+        padding: 10px;
+        border-radius: 4px;
+        margin-top: 12px;
+        display: none;
+      }
+      .status.success {
+        display: block;
+        background: rgba(67, 181, 129, 0.2);
+        color: var(--success);
+      }
+      .status.error {
+        display: block;
+        background: rgba(240, 71, 71, 0.2);
+        color: var(--error);
+      }
+      .status.info {
+        display: block;
+        background: rgba(88, 101, 242, 0.2);
+        color: var(--primary);
+      }
+      esp-web-install-button {
+        display: block;
+        margin: 16px 0;
+      }
+      .hidden { display: none !important; }
+      .flex-row {
+        display: flex;
+        gap: 10px;
+      }
+      .flex-row button {
+        flex: 1;
+      }
+      #serial-log {
+        background: #1e1e1e;
+        padding: 10px;
+        border-radius: 4px;
+        font-family: monospace;
+        font-size: 0.85em;
+        max-height: 150px;
+        overflow-y: auto;
+        margin-top: 12px;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .note {
+        font-size: 0.85em;
+        color: var(--text-muted);
+        margin-top: 8px;
+      }
+    </style>
   </head>
   <body>
-    <h1>Discord Voice Status ESP</h1>
-    <p>
-      Flash firmware, then connect to the device AP <b>DiscordVoiceSetup</b> to set WiFi, wsURL, and token.
-    </p>
+    <div class="container">
+      <h1>🎮 Discord Voice Status ESP</h1>
+      <p class="subtitle">Flash and configure your ESP device for Discord voice status indication</p>
 
-    <script type="module"
-      src="https://unpkg.com/esp-web-tools@3/dist/web/install-button.js?module">
+      <!-- Step 1: Flash -->
+      <div class="card">
+        <h2><span class="step-number">1</span>Flash Firmware</h2>
+        <p>Connect your ESP8266 or ESP32 via USB and click the button below.</p>
+        
+        <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+        <esp-web-install-button manifest="./manifest.json"></esp-web-install-button>
+        
+        <p class="note">After flashing, the device will restart automatically.</p>
+      </div>
+
+      <!-- Step 2: Configure -->
+      <div class="card">
+        <h2><span class="step-number">2</span>Configure Device</h2>
+        <p>Enter your WebSocket URL and Auth Token, then send to device via serial.</p>
+        
+        <label for="wsUrl">WebSocket URL</label>
+        <input type="url" id="wsUrl" placeholder="wss://your-server.com/ws" />
+        
+        <label for="authToken">Auth Token</label>
+        <input type="password" id="authToken" placeholder="Your authentication token" />
+        
+        <div class="flex-row">
+          <button id="connectBtn" onclick="connectSerial()">Connect Serial</button>
+          <button id="sendConfigBtn" onclick="sendConfig()" disabled>Send Config</button>
+        </div>
+        
+        <div class="flex-row" style="margin-top: 10px;">
+          <button id="getConfigBtn" class="btn-secondary" onclick="getConfig()" disabled>Read Config</button>
+          <button id="rebootBtn" class="btn-secondary" onclick="rebootDevice()" disabled>Reboot</button>
+        </div>
+        
+        <div id="status" class="status"></div>
+        <div id="serial-log" class="hidden"></div>
+      </div>
+
+      <!-- Step 3: WiFi -->
+      <div class="card">
+        <h2><span class="step-number">3</span>Connect to WiFi</h2>
+        <p>After configuration, connect to the <strong>DiscordVoiceSetup</strong> WiFi network to configure your WiFi credentials and 802.1X settings (if needed).</p>
+      </div>
+    </div>
+
+    <script>
+      let port = null;
+      let reader = null;
+      let writer = null;
+      let readBuffer = '';
+
+      function setStatus(message, type = 'info') {
+        const el = document.getElementById('status');
+        el.textContent = message;
+        el.className = 'status ' + type;
+      }
+
+      function log(text) {
+        const el = document.getElementById('serial-log');
+        el.classList.remove('hidden');
+        el.textContent += text + '\n';
+        el.scrollTop = el.scrollHeight;
+      }
+
+      async function connectSerial() {
+        try {
+          port = await navigator.serial.requestPort();
+          await port.open({ baudRate: 115200 });
+          
+          writer = port.writable.getWriter();
+          reader = port.readable.getReader();
+          
+          document.getElementById('connectBtn').textContent = 'Connected ✓';
+          document.getElementById('connectBtn').disabled = true;
+          document.getElementById('sendConfigBtn').disabled = false;
+          document.getElementById('getConfigBtn').disabled = false;
+          document.getElementById('rebootBtn').disabled = false;
+          
+          setStatus('Connected to device', 'success');
+          
+          // Start reading
+          readLoop();
+        } catch (err) {
+          setStatus('Failed to connect: ' + err.message, 'error');
+        }
+      }
+
+      async function readLoop() {
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            
+            const text = new TextDecoder().decode(value);
+            readBuffer += text;
+            
+            // Process complete lines
+            let lines = readBuffer.split('\n');
+            readBuffer = lines.pop(); // Keep incomplete line in buffer
+            
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed) {
+                log('← ' + trimmed);
+                handleResponse(trimmed);
+              }
+            }
+          }
+        } catch (err) {
+          if (err.name !== 'NetworkError') {
+            console.error('Read error:', err);
+          }
+        }
+      }
+
+      function handleResponse(line) {
+        if (line === 'OK:CONFIG_SAVED') {
+          setStatus('Configuration saved successfully!', 'success');
+        } else if (line === 'OK:REBOOTING') {
+          setStatus('Device is rebooting...', 'info');
+        } else if (line.startsWith('CONFIG:')) {
+          try {
+            const config = JSON.parse(line.substring(7));
+            document.getElementById('wsUrl').value = config.wsUrl || '';
+            setStatus('Config loaded. Version: ' + config.version, 'success');
+          } catch (e) {
+            console.error('Failed to parse config:', e);
+          }
+        } else if (line.startsWith('ERR:')) {
+          setStatus('Error: ' + line.substring(4), 'error');
+        }
+      }
+
+      async function sendCommand(cmd) {
+        if (!writer) {
+          setStatus('Not connected', 'error');
+          return;
+        }
+        log('→ ' + cmd);
+        await writer.write(new TextEncoder().encode(cmd + '\n'));
+      }
+
+      async function sendConfig() {
+        const wsUrl = document.getElementById('wsUrl').value.trim();
+        const authToken = document.getElementById('authToken').value.trim();
+        
+        if (!wsUrl) {
+          setStatus('Please enter a WebSocket URL', 'error');
+          return;
+        }
+        
+        const config = { wsUrl };
+        if (authToken) config.authToken = authToken;
+        
+        await sendCommand('CONFIG:' + JSON.stringify(config));
+        setStatus('Sending configuration...', 'info');
+      }
+
+      async function getConfig() {
+        await sendCommand('GET_CONFIG');
+        setStatus('Reading configuration...', 'info');
+      }
+
+      async function rebootDevice() {
+        await sendCommand('REBOOT');
+      }
+
+      // Check for Web Serial support
+      if (!('serial' in navigator)) {
+        document.getElementById('status').textContent = 
+          'Web Serial is not supported in this browser. Use Chrome or Edge.';
+        document.getElementById('status').className = 'status error';
+        document.getElementById('connectBtn').disabled = true;
+      }
     </script>
-
-    <esp-web-install-button manifest="./manifest.json"></esp-web-install-button>
   </body>
 </html>
