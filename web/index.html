@@ -235,10 +235,13 @@
           document.getElementById('getConfigBtn').disabled = false;
           document.getElementById('rebootBtn').disabled = false;
           
-          setStatus('Connected to device', 'success');
+          setStatus('Connected! Entering config mode...', 'info');
           
           // Start reading
           readLoop();
+          
+          // Send WEB_CONFIG to enter extended configuration mode
+          await sendCommand('WEB_CONFIG');
         } catch (err) {
           setStatus('Failed to connect: ' + err.message, 'error');
         }
@@ -274,9 +277,11 @@
 
       function handleResponse(line) {
         if (line === 'OK:CONFIG_SAVED') {
-          setStatus('Configuration saved successfully!', 'success');
+          setStatus('Configuration saved! Device will reboot...', 'success');
         } else if (line === 'OK:REBOOTING') {
           setStatus('Device is rebooting...', 'info');
+        } else if (line === 'OK:WEB_CONFIG_MODE') {
+          setStatus('✓ Config mode active! Enter your settings and click Send Config.', 'success');
         } else if (line.startsWith('CONFIG:')) {
           try {
             const config = JSON.parse(line.substring(7));
@@ -287,6 +292,8 @@
           }
         } else if (line.startsWith('ERR:')) {
           setStatus('Error: ' + line.substring(4), 'error');
+        } else if (line === '✅ Configuration complete!') {
+          setStatus('Configuration complete! Connect to DiscordVoiceSetup WiFi to finish.', 'success');
         }
       }
 
