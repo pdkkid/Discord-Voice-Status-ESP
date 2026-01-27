@@ -175,17 +175,17 @@
         <h2><span class="step-number">2</span>Configure Device</h2>
         <p>Enter your settings and send to device via serial.</p>
         
-        <label for="wifiSsid">WiFi Network Name (SSID)</label>
-        <input type="text" id="wifiSsid" placeholder="Your WiFi network name" autocomplete="off" />
-        
-        <label for="wifiPass">WiFi Password</label>
-        <input type="password" id="wifiPass" placeholder="Your WiFi password" />
-        
         <label for="wsUrl">WebSocket URL</label>
         <input type="url" id="wsUrl" placeholder="wss://your-server.com/ws" />
         
         <label for="authToken">Auth Token</label>
         <input type="password" id="authToken" placeholder="Your authentication token" />
+        
+        <label for="wifiSsid">WiFi Network Name (SSID) <span style="color: var(--text-muted); font-weight: normal;">(optional)</span></label>
+        <input type="text" id="wifiSsid" placeholder="Your WiFi network name" autocomplete="off" />
+        
+        <label for="wifiPass">WiFi Password <span style="color: var(--text-muted); font-weight: normal;">(optional)</span></label>
+        <input type="password" id="wifiPass" placeholder="Your WiFi password" />
         
         <div class="flex-row">
           <button id="connectBtn" onclick="connectSerial()">Connect Serial</button>

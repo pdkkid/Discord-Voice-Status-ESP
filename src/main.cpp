@@ -900,43 +900,17 @@ void setup()
   cfg.eapPassword = DEFAULT_EAP_PASSWORD;
   loadConfig(cfg);
 
-  // Brief window to catch WEB_CONFIG command from the web UI
-  // If WEB_CONFIG is received, enter extended configuration mode
-  Serial.println("⏳ Send WEB_CONFIG within 30s for serial configuration...");
-  uint32_t waitStart = millis();
+  // Only wait for WEB_CONFIG if we don't have app config yet
+  // If wsUrl and authToken are already set, skip the wait and go straight to WiFi
   bool webConfigMode = false;
   
-  while (millis() - waitStart < 30000)
+  if (!hasAppConfig())
   {
-    if (Serial.available())
-    {
-      String cmd = Serial.readStringUntil('\n');
-      cmd.trim();
-      if (cmd.length() > 0)
-      {
-        if (cmd == "WEB_CONFIG")
-        {
-          webConfigMode = true;
-          Serial.println("OK:WEB_CONFIG_MODE");
-          Serial.println("🔧 Web config mode active - waiting for configuration...");
-          Serial.println("💡 Send CONFIG:{\"wsUrl\":\"...\",\"authToken\":\"...\"} to configure");
-          break;
-        }
-        else
-        {
-          handleSerialCommand(cmd);
-          loadConfig(cfg);
-        }
-      }
-    }
-    delay(10);
-  }
-  
-  // Extended wait if web config mode was activated
-  if (webConfigMode)
-  {
-    waitStart = millis();
-    while (millis() - waitStart < 300000)  // 5 minute window
+    // Brief window to catch WEB_CONFIG command from the web UI
+    Serial.println("⏳ No config found. Send WEB_CONFIG within 30s for serial configuration...");
+    uint32_t waitStart = millis();
+    
+    while (millis() - waitStart < 30000)
     {
       if (Serial.available())
       {
@@ -946,25 +920,60 @@ void setup()
         {
           if (cmd == "WEB_CONFIG")
           {
-            // Refresh the timeout
-            waitStart = millis();
+            webConfigMode = true;
             Serial.println("OK:WEB_CONFIG_MODE");
+            Serial.println("🔧 Web config mode active - waiting for configuration...");
+            Serial.println("💡 Send CONFIG:{\"wsUrl\":\"...\",\"authToken\":\"...\"} to configure");
+            break;
           }
           else
           {
             handleSerialCommand(cmd);
             loadConfig(cfg);
-            // If config now exists, we're done
-            if (hasAppConfig())
-            {
-              Serial.println("✅ Configuration complete!");
-              break;
-            }
           }
         }
       }
       delay(10);
     }
+    
+    // Extended wait if web config mode was activated
+    if (webConfigMode)
+    {
+      waitStart = millis();
+      while (millis() - waitStart < 300000)  // 5 minute window
+      {
+        if (Serial.available())
+        {
+          String cmd = Serial.readStringUntil('\n');
+          cmd.trim();
+          if (cmd.length() > 0)
+          {
+            if (cmd == "WEB_CONFIG")
+            {
+              // Refresh the timeout
+              waitStart = millis();
+              Serial.println("OK:WEB_CONFIG_MODE");
+            }
+            else
+            {
+              handleSerialCommand(cmd);
+              loadConfig(cfg);
+              // If config now exists, we're done
+              if (hasAppConfig())
+              {
+                Serial.println("✅ Configuration complete!");
+                break;
+              }
+            }
+          }
+        }
+        delay(10);
+      }
+    }
+  }
+  else
+  {
+    Serial.println("✅ Config found! Skipping WEB_CONFIG wait.");
   }
 
   if (FORCE_PORTAL_PIN >= 0)
@@ -1044,7 +1053,8 @@ void setup()
     // Fall back to portal if nothing worked
     if (!wifiConnected)
     {
-      Serial.println("🛠 All WiFi connection attempts failed -> portal");
+      Serial.println("🛠 All WiFi connection attempts failed -> portal for WiFi setup");
+      Serial.println("💡 App config already set! Portal will only collect WiFi credentials.");
       startConfigPortalAndSave();
     }
   }
@@ -1125,7 +1135,7 @@ void loop()
     // Fall back to portal
     if (!wifiConnected)
     {
-      Serial.println("📡 WiFi reconnection failed -> portal");
+      Serial.println("📡 WiFi reconnection failed -> portal for WiFi setup");
       startConfigPortalAndSave();
     }
 
