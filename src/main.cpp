@@ -206,6 +206,12 @@ static bool defaultsHaveAppConfig()
   return !isBlank(DEFAULT_WS_URL) && !isBlank(DEFAULT_AUTH_TOKEN);
 }
 
+// Check if we have a valid app config (from defaults OR loaded from flash)
+static bool hasAppConfig()
+{
+  return cfg.wsUrl.length() > 0 && cfg.authToken.length() > 0;
+}
+
 // Check if 802.1X enterprise authentication is configured
 static bool hasEapCredentials()
 {
@@ -771,6 +777,90 @@ static void setupWebSocketFromConfig()
   }
 }
 
+// -------------- Serial Command Handler --------------
+static void handleSerialCommand(const String &cmd)
+{
+  // CONFIG:{"wsUrl":"...","authToken":"..."}
+  if (cmd.startsWith("CONFIG:"))
+  {
+    String json = cmd.substring(7);
+    StaticJsonDocument<512> doc;
+    auto err = deserializeJson(doc, json);
+    if (!err)
+    {
+      bool changed = false;
+      
+      if (doc.containsKey("wsUrl"))
+      {
+        cfg.wsUrl = doc["wsUrl"].as<String>();
+        changed = true;
+      }
+      if (doc.containsKey("authToken"))
+      {
+        cfg.authToken = doc["authToken"].as<String>();
+        changed = true;
+      }
+      if (doc.containsKey("eapIdentity"))
+      {
+        cfg.eapIdentity = doc["eapIdentity"].as<String>();
+        changed = true;
+      }
+      if (doc.containsKey("eapPassword"))
+      {
+        cfg.eapPassword = doc["eapPassword"].as<String>();
+        changed = true;
+      }
+      
+      if (changed)
+      {
+        saveConfig(cfg);
+        Serial.println("OK:CONFIG_SAVED");
+        Serial.println("OK:REBOOTING");
+        Serial.flush();
+        delay(100);
+        ESP.restart();
+      }
+      else
+      {
+        Serial.println("OK:NO_CHANGES");
+      }
+    }
+    else
+    {
+      Serial.println("ERR:INVALID_JSON");
+    }
+  }
+  else if (cmd == "GET_CONFIG")
+  {
+    StaticJsonDocument<512> doc;
+    doc["wsUrl"] = cfg.wsUrl;
+    doc["authToken"] = cfg.authToken.length() > 0 ? "****" : "";
+    doc["eapIdentity"] = cfg.eapIdentity;
+    doc["hasEapPassword"] = cfg.eapPassword.length() > 0;
+    doc["version"] = FW_VERSION_STR;
+    Serial.print("CONFIG:");
+    serializeJson(doc, Serial);
+    Serial.println();
+  }
+  else if (cmd == "REBOOT")
+  {
+    Serial.println("OK:REBOOTING");
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+  }
+  else if (cmd == "PORTAL")
+  {
+    Serial.println("OK:STARTING_PORTAL");
+    startConfigPortalAndSave();
+    setupWebSocketFromConfig();
+  }
+  else if (cmd == "PING")
+  {
+    Serial.println("PONG");
+  }
+}
+
 void setup()
 {
   Serial.begin(115200);
@@ -785,6 +875,73 @@ void setup()
   cfg.eapPassword = DEFAULT_EAP_PASSWORD;
   loadConfig(cfg);
 
+  // Brief window to catch WEB_CONFIG command from the web UI
+  // If WEB_CONFIG is received, enter extended configuration mode
+  Serial.println("⏳ Send WEB_CONFIG within 5s for serial configuration...");
+  uint32_t waitStart = millis();
+  bool webConfigMode = false;
+  
+  while (millis() - waitStart < 5000)
+  {
+    if (Serial.available())
+    {
+      String cmd = Serial.readStringUntil('\n');
+      cmd.trim();
+      if (cmd.length() > 0)
+      {
+        if (cmd == "WEB_CONFIG")
+        {
+          webConfigMode = true;
+          Serial.println("OK:WEB_CONFIG_MODE");
+          Serial.println("🔧 Web config mode active - waiting for configuration...");
+          Serial.println("💡 Send CONFIG:{\"wsUrl\":\"...\",\"authToken\":\"...\"} to configure");
+          break;
+        }
+        else
+        {
+          handleSerialCommand(cmd);
+          loadConfig(cfg);
+        }
+      }
+    }
+    delay(10);
+  }
+  
+  // Extended wait if web config mode was activated
+  if (webConfigMode)
+  {
+    waitStart = millis();
+    while (millis() - waitStart < 300000)  // 5 minute window
+    {
+      if (Serial.available())
+      {
+        String cmd = Serial.readStringUntil('\n');
+        cmd.trim();
+        if (cmd.length() > 0)
+        {
+          if (cmd == "WEB_CONFIG")
+          {
+            // Refresh the timeout
+            waitStart = millis();
+            Serial.println("OK:WEB_CONFIG_MODE");
+          }
+          else
+          {
+            handleSerialCommand(cmd);
+            loadConfig(cfg);
+            // If config now exists, we're done
+            if (hasAppConfig())
+            {
+              Serial.println("✅ Configuration complete!");
+              break;
+            }
+          }
+        }
+      }
+      delay(10);
+    }
+  }
+
   if (FORCE_PORTAL_PIN >= 0)
   {
     pinMode(FORCE_PORTAL_PIN, INPUT_PULLUP);
@@ -794,13 +951,16 @@ void setup()
     }
   }
 
-  // If defaults are missing, force portal
-  if (!defaultsHaveAppConfig())
+  // Check if we have app config (from defaults, flash, or just received via serial)
+  if (!hasAppConfig())
   {
-    Serial.println("🛠 Missing DEFAULT_WS_URL and/or DEFAULT_AUTH_TOKEN -> portal");
+    Serial.println("🛠 No WS_URL/AUTH_TOKEN configured -> portal");
+    Serial.println("💡 Tip: Send CONFIG:{\"wsUrl\":\"...\",\"authToken\":\"...\"} via serial to skip portal");
     startConfigPortalAndSave();
   }
-  else
+  
+  // Now try to connect to WiFi
+  if (WiFi.status() != WL_CONNECTED)
   {
     // Prefer saved creds first (if present)
     if (hasSavedWiFiCreds())
@@ -860,6 +1020,18 @@ void setup()
 
 void loop()
 {
+  // Handle serial commands FIRST - before WiFi checks so config works even without WiFi
+  if (Serial.available())
+  {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();  // Removes \r and whitespace
+    
+    if (cmd.length() > 0)
+    {
+      handleSerialCommand(cmd);
+    }
+  }
+
   if (WiFi.status() != WL_CONNECTED)
   {
     Serial.println("📶 WiFi lost");
@@ -918,84 +1090,6 @@ void loop()
   }
 
   webSocket.loop();
-
-  // Handle serial commands for web-based configuration
-  if (Serial.available())
-  {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-    
-    // CONFIG:{"wsUrl":"...","authToken":"..."}
-    if (cmd.startsWith("CONFIG:"))
-    {
-      String json = cmd.substring(7);
-      StaticJsonDocument<512> doc;
-      auto err = deserializeJson(doc, json);
-      if (!err)
-      {
-        bool changed = false;
-        
-        if (doc.containsKey("wsUrl"))
-        {
-          cfg.wsUrl = doc["wsUrl"].as<String>();
-          changed = true;
-        }
-        if (doc.containsKey("authToken"))
-        {
-          cfg.authToken = doc["authToken"].as<String>();
-          changed = true;
-        }
-        if (doc.containsKey("eapIdentity"))
-        {
-          cfg.eapIdentity = doc["eapIdentity"].as<String>();
-          changed = true;
-        }
-        if (doc.containsKey("eapPassword"))
-        {
-          cfg.eapPassword = doc["eapPassword"].as<String>();
-          changed = true;
-        }
-        
-        if (changed)
-        {
-          saveConfig(cfg);
-          Serial.println("OK:CONFIG_SAVED");
-        }
-        else
-        {
-          Serial.println("OK:NO_CHANGES");
-        }
-      }
-      else
-      {
-        Serial.println("ERR:INVALID_JSON");
-      }
-    }
-    else if (cmd == "GET_CONFIG")
-    {
-      StaticJsonDocument<512> doc;
-      doc["wsUrl"] = cfg.wsUrl;
-      doc["authToken"] = cfg.authToken.length() > 0 ? "****" : "";
-      doc["eapIdentity"] = cfg.eapIdentity;
-      doc["hasEapPassword"] = cfg.eapPassword.length() > 0;
-      doc["version"] = FW_VERSION_STR;
-      Serial.print("CONFIG:");
-      serializeJson(doc, Serial);
-      Serial.println();
-    }
-    else if (cmd == "REBOOT")
-    {
-      Serial.println("OK:REBOOTING");
-      delay(100);
-      ESP.restart();
-    }
-    else if (cmd == "PORTAL")
-    {
-      Serial.println("OK:STARTING_PORTAL");
-      startConfigPortalAndSave();
-      setupWebSocketFromConfig();
-    }
-  }
 
   // Manual reconnect pacing
   uint32_t now = millis();
