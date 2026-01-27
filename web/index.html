@@ -164,10 +164,29 @@
         <h2><span class="step-number">1</span>Flash Firmware</h2>
         <p>Connect your ESP8266 or ESP32 via USB and click the button below.</p>
         
+        <details style="margin: 12px 0; color: var(--text-muted); font-size: 0.9em;">
+          <summary style="cursor: pointer; color: var(--warning);">⚠️ ESP32-S2 Users: Click here first!</summary>
+          <div style="margin-top: 8px; padding: 10px; background: var(--bg); border-radius: 4px;">
+            <p style="margin: 0 0 8px 0;"><strong>ESP32-S2 requires manual bootloader mode:</strong></p>
+            <ol style="margin: 0; padding-left: 20px;">
+              <li>Unplug the device</li>
+              <li>Hold the <strong>0 (BOOT)</strong> button</li>
+              <li>Plug in USB while holding the button</li>
+              <li>Release after 1 second</li>
+              <li>Now click Install below</li>
+            </ol>
+          </div>
+        </details>
+        
         <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
         <esp-web-install-button id="installBtn" manifest="./manifest.json"></esp-web-install-button>
         
-        <p class="note">After flashing, click "Connect Serial" within 30 seconds to configure.</p>
+        <div style="margin-top: 12px;">
+          <button id="eraseBtn" class="btn-secondary" onclick="eraseDevice()" style="background: var(--error);">🗑️ Erase Flash</button>
+          <span class="note" style="margin-left: 8px;">Completely wipes the device (ESP32-S2: enter bootloader first)</span>
+        </div>
+        
+        <p class="note">After flashing, press RST button, then click "Connect Serial" to configure.</p>
       </div>
 
       <!-- Step 2: Configure -->
@@ -227,6 +246,55 @@
         el.classList.remove('hidden');
         el.textContent += text + '\n';
         el.scrollTop = el.scrollHeight;
+      }
+      
+      async function eraseDevice() {
+        if (!confirm('⚠️ This will completely erase the device flash!\\n\\nFor ESP32-S2: Make sure you entered bootloader mode first.\\n\\nContinue?')) {
+          return;
+        }
+        
+        const eraseBtn = document.getElementById('eraseBtn');
+        eraseBtn.disabled = true;
+        eraseBtn.textContent = '⏳ Erasing...';
+        setStatus('Connecting to device...', 'info');
+        
+        try {
+          // Import ESPLoader dynamically
+          const { ESPLoader, Transport } = await import('https://unpkg.com/esptool-js@0.4.3/bundle.js');
+          
+          // Request serial port
+          const erasePort = await navigator.serial.requestPort();
+          await erasePort.open({ baudRate: 115200 });
+          
+          const transport = new Transport(erasePort, true);
+          const esploader = new ESPLoader({
+            transport,
+            baudrate: 115200,
+            romBaudrate: 115200,
+            terminal: {
+              clean() {},
+              writeLine(data) { log(data); },
+              write(data) { log(data); }
+            }
+          });
+          
+          setStatus('Connecting to bootloader...', 'info');
+          await esploader.main();
+          
+          setStatus('Erasing flash... (this may take a minute)', 'info');
+          await esploader.eraseFlash();
+          
+          setStatus('✅ Flash erased successfully! Device is now blank.', 'success');
+          
+          await transport.disconnect();
+          await erasePort.close();
+        } catch (err) {
+          console.error('Erase error:', err);
+          setStatus('❌ Erase failed: ' + err.message, 'error');
+        } finally {
+          eraseBtn.disabled = false;
+          eraseBtn.textContent = '🗑️ Erase Flash';
+        }
       }
 
       function updateButtons(connected) {
