@@ -50,7 +50,7 @@ static const int FORCE_PORTAL_PIN = -1;
 
 // WiFi retry behavior
 static const uint8_t WIFI_CONNECT_TRIES = 4;
-static const uint32_t WIFI_TRY_TIMEOUT_MS = 8000;
+static const uint32_t WIFI_TRY_TIMEOUT_MS = 15000;  // 15s for enterprise networks
 
 // Auth failure behavior
 static const uint8_t MAX_AUTH_FAILURES = 3;
@@ -243,9 +243,12 @@ static bool tryConnectWifiEnterprise(const char *ssid, const char *identity, con
   // Configure WPA2 Enterprise for ESP8266
   Serial.println("🔐 Setting up ESP8266 WPA2 Enterprise...");
   wifi_station_clear_enterprise_identity();
-  wifi_station_set_enterprise_identity((uint8_t *)identity, strlen(identity));
+  // Set anonymous identity for outer (unencrypted) authentication
+  // This is common for PEAP - real identity is sent encrypted
+  wifi_station_set_enterprise_identity((uint8_t *)"anonymous", 9);
   wifi_station_set_enterprise_username((uint8_t *)identity, strlen(identity));
   wifi_station_set_enterprise_password((uint8_t *)password, strlen(password));
+  wifi_station_set_enterprise_disable_time_check(1);  // Disable cert time check
   int ret = wifi_station_set_wpa2_enterprise_auth(1);
   Serial.printf("🔐 wifi_station_set_wpa2_enterprise_auth returned: %d\n", ret);
 #else
@@ -258,9 +261,12 @@ static bool tryConnectWifiEnterprise(const char *ssid, const char *identity, con
   esp_wifi_start();
   delay(100);
   
-  esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)identity, strlen(identity));
+  // Set anonymous identity for outer (unencrypted) PEAP authentication
+  esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)"anonymous", 9);
   esp_wifi_sta_wpa2_ent_set_username((uint8_t *)identity, strlen(identity));
   esp_wifi_sta_wpa2_ent_set_password((uint8_t *)password, strlen(password));
+  // Disable certificate time validation (common issue with embedded devices)
+  // esp_wifi_sta_wpa2_ent_set_disable_time_check(true);  // Uncomment if needed
   esp_err_t err = esp_wifi_sta_wpa2_ent_enable();
   Serial.printf("🔐 esp_wifi_sta_wpa2_ent_enable returned: %d (0=OK)\n", err);
   if (err != ESP_OK) {
